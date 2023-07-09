@@ -13,12 +13,12 @@
 ---
 
 开发进程：
-<input type="checkbox" unchecked disabled/> 代码调试；
-<input type="checkbox" disabled/> 全参数训练
-<input type="checkbox" disabled/> 参数有效性训练
-<input type="checkbox" disabled/> 量化感知训练
-<input type="checkbox" disabled/> 指令微调
-<input type="checkbox" disabled/> 多轮对话
+⌛️ 代码调试；
+⌛️ 全参数训练
+⌛️ 参数有效性训练
+⌛️ 量化感知训练
+⌛️ 指令微调
+⌛️ 多轮对话
 
 ---
 
