@@ -11,8 +11,8 @@ deepspeed --num_gpus=4 --master_port $MASTER_PORT main.py \
     --prompt_column content \
     --response_column summary \
     --overwrite_cache \
-    --model_name_or_path THUDM/chatglm2-6b \
-    --output_dir ./output/adgen-chatglm2-6b-ft-$LR \
+    --model_name_or_path THUDM/chatglm-6b \
+    --output_dir ./output/adgen-chatglm-6b-ft-$LR \
     --overwrite_output_dir \
     --max_source_length 64 \
     --max_target_length 64 \

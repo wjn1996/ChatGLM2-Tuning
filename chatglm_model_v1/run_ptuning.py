@@ -40,35 +40,21 @@ from transformers import (
     Seq2SeqTrainingArguments,
     set_seed,
 )
-
-# 添加PEFT配置
-from peft import (
-    LoraConfig, 
-    PrefixTuningConfig,
-    PromptEncoderConfig,
-    PromptEncoderReparameterizationType,
-    PromptTuningConfig,
-    PromptTuningInit,
-    TaskType,
-    get_peft_model,
-)
-
 from trainer_seq2seq import Seq2SeqTrainer
 
-from arguments import ModelArguments, DataTrainingArguments, PeftArguments
+from arguments import ModelArguments, DataTrainingArguments
 
 logger = logging.getLogger(__name__)
 
 def main():
-    # 加载模型、训练和数据参数配置
-    # loading model, training and data augments
-    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments, PeftArguments))
+
+    parser = HfArgumentParser((ModelArguments, DataTrainingArguments, Seq2SeqTrainingArguments))
     if len(sys.argv) == 2 and sys.argv[1].endswith(".json"):
         # If we pass only one argument to the script and it's the path to a json file,
         # let's parse it to get our arguments.
-        model_args, data_args, training_args, peft_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
+        model_args, data_args, training_args = parser.parse_json_file(json_file=os.path.abspath(sys.argv[1]))
     else:
-        model_args, data_args, training_args, peft_args = parser.parse_args_into_dataclasses()
+        model_args, data_args, training_args = parser.parse_args_into_dataclasses()
 
     # Setup logging
     logging.basicConfig(
@@ -110,7 +96,6 @@ def main():
         data_files["test"] = data_args.test_file
         extension = data_args.test_file.split(".")[-1]
 
-    # 读取为hugging face格式的数据
     raw_datasets = load_dataset(
         extension,
         data_files=data_files,
@@ -125,64 +110,29 @@ def main():
 
     tokenizer = AutoTokenizer.from_pretrained(model_args.model_name_or_path, trust_remote_code=True)
 
-    model = AutoModel.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
-
-    # 使用PEFT
-    if peft_args.peft_type is not None:
-        if peft_args.peft_type == "lora":
-            peft_config = LoraConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                r=8,
-                lora_alpha=32,
-                lora_dropout=0.1
-            )
-        elif peft_args.peft_type == "ptuning":
-            peft_config = PromptEncoderConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                encoder_reparameterization_type=PromptEncoderReparameterizationType.MLP, # 默认使用MLP表征Prompt
-                encoder_num_layers=2,
-                encoder_dropout=0.1,
-                num_virtual_tokens=8 # soft prompt token数量
-            )
-        elif peft_args.peft_type == "prefix":
-            peft_config = PrefixTuningConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                num_virtual_tokens=4,
-                num_attention_heads=12, 
-                num_layers=48,
-                encoder_hidden_size=768,
-                token_dim=1536,
-            )
-        elif peft_args.peft_type == "prompt":
-            peft_config = PromptTuningConfig(
-                task_type=TaskType.CAUSAL_LM,
-                inference_mode=False,
-                prompt_tuning_init=PromptTuningInit.TEXT if peft_args.prompt_tuning_initial_text is not None else PromptTuningInit.RANDOM
-            )
-        elif peft_args.peft_type == "adalora":
-            raise NotImplementedError("Adalora is under developing")
-        else:
-            raise NotImplementedError("you must choose one of parameter-efficient learning method")
-    
-        logger.info("You have chosen {} as peft type, here is loading model ...".format(peft_args.peft_type))
-        model = get_peft_model(model, peft_config=peft_config)
-        logger.info("Reduing trainable parameters: {}".format(model.print_trainable_parameters))
+    if model_args.ptuning_checkpoint is not None:
+        # Evaluation
+        # Loading extra state dict of prefix encoder
+        model = AutoModel.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
+        prefix_state_dict = torch.load(os.path.join(model_args.ptuning_checkpoint, "pytorch_model.bin"))
+        new_prefix_state_dict = {}
+        for k, v in prefix_state_dict.items():
+            if k.startswith("transformer.prefix_encoder."):
+                new_prefix_state_dict[k[len("transformer.prefix_encoder."):]] = v
+        model.transformer.prefix_encoder.load_state_dict(new_prefix_state_dict)
+    else:
+        model = AutoModel.from_pretrained(model_args.model_name_or_path, config=config, trust_remote_code=True)
 
     if model_args.quantization_bit is not None:
         print(f"Quantized to {model_args.quantization_bit} bit")
         model = model.quantize(model_args.quantization_bit)
-    
-    
-    # if model_args.pre_seq_len is not None:
-    #     # P-tuning v2
-    #     model = model.half() # 开启半精度模式
-    #     model.transformer.prefix_encoder.float()
-    # else:
-    #     # Finetune
-    #     model = model.float()
+    if model_args.pre_seq_len is not None:
+        # P-tuning v2
+        model = model.half()
+        model.transformer.prefix_encoder.float()
+    else:
+        # Finetune
+        model = model.float()
 
     prefix = data_args.source_prefix if data_args.source_prefix is not None else ""
 
@@ -211,8 +161,14 @@ def main():
         for i in range(len(examples[prompt_column])):
             if examples[prompt_column][i] and examples[response_column][i]:
                 query = examples[prompt_column][i]
-                history = examples[history_column][i] if history_column is not None else None
-                prompt = tokenizer.build_prompt(query, history)
+                if history_column is None or len(examples[history_column][i]) == 0:
+                    prompt = query
+                else:
+                    prompt = ""
+                    history = examples[history_column][i]
+                    for turn_idx, (old_query, response) in enumerate(history):
+                        prompt += "[Round {}]\n问：{}\n答：{}\n".format(turn_idx, old_query, response)
+                    prompt += "[Round {}]\n问：{}\n答：".format(len(history), query)
                 inputs.append(prompt)
                 targets.append(examples[response_column][i])
 
@@ -229,7 +185,7 @@ def main():
         return model_inputs
 
     def preprocess_function_train(examples):
-        max_seq_length = data_args.max_source_length + data_args.max_target_length + 1
+        max_seq_length = data_args.max_source_length + data_args.max_target_length
 
         model_inputs = {
             "input_ids": [],
@@ -239,18 +195,30 @@ def main():
             if examples[prompt_column][i] and examples[response_column][i]:
                 query, answer = examples[prompt_column][i], examples[response_column][i]
 
-                history = examples[history_column][i] if history_column is not None else None
-                prompt = tokenizer.build_prompt(query, history)
+                if history_column is None:
+                    prompt = query
+                else:
+                    prompt = ""
+                    history = examples[history_column][i]
+                    for turn_idx, (old_query, response) in enumerate(history):
+                        prompt += "[Round {}]\n问：{}\n答：{}\n".format(turn_idx, old_query, response)
+                    prompt += "[Round {}]\n问：{}\n答：".format(len(history), query)
 
                 prompt = prefix + prompt
-                a_ids = tokenizer.encode(text=prompt, add_special_tokens=True, truncation=True,
-                                         max_length=data_args.max_source_length)
-                b_ids = tokenizer.encode(text=answer, add_special_tokens=False, truncation=True,
-                                         max_length=data_args.max_target_length)
+                a_ids = tokenizer.encode(text=prompt, add_special_tokens=False)
+                b_ids = tokenizer.encode(text=answer, add_special_tokens=False)
 
-                context_length = len(a_ids)
-                input_ids = a_ids + b_ids + [tokenizer.eos_token_id]
-                labels = [tokenizer.pad_token_id] * context_length + b_ids + [tokenizer.eos_token_id]
+                if len(a_ids) > data_args.max_source_length - 1:
+                    a_ids = a_ids[: data_args.max_source_length - 1]
+
+                if len(b_ids) > data_args.max_target_length - 2:
+                    b_ids = b_ids[: data_args.max_target_length - 2]
+
+                input_ids = tokenizer.build_inputs_with_special_tokens(a_ids, b_ids)
+
+                context_length = input_ids.index(tokenizer.bos_token_id)
+                mask_position = context_length - 1
+                labels = [-100] * context_length + input_ids[mask_position+1:]
                 
                 pad_len = max_seq_length - len(input_ids)
                 input_ids = input_ids + [tokenizer.pad_token_id] * pad_len
@@ -264,10 +232,14 @@ def main():
         return model_inputs
     
     def print_dataset_example(example):
-        print("input_ids", example["input_ids"])
+        print("input_ids",example["input_ids"])
         print("inputs", tokenizer.decode(example["input_ids"]))
         print("label_ids", example["labels"])
         print("labels", tokenizer.decode(example["labels"]))
+    
+    base_cache_dir = os.path.join(data_args.base_cache_dir, data_args.task_name)
+    if training_args.local_rank <= 0 and not os.path.exists(base_cache_dir):
+        os.makedirs(base_cache_dir)
 
     if training_args.do_train:
         if "train" not in raw_datasets:
@@ -284,6 +256,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on train dataset",
+                cache_file_name=os.path.join(base_cache_dir, "train.arrow")
             )
         print_dataset_example(train_dataset[0])
 
@@ -303,6 +276,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
+                cache_file_name=os.path.join(base_cache_dir, "eval.arrow")
             )
         print_dataset_example(eval_dataset[0])
 
@@ -322,6 +296,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on prediction dataset",
+                cache_file_name=os.path.join(base_cache_dir, "predict.arrow")
             )
         print_dataset_example(predict_dataset[0])
 
@@ -386,7 +361,7 @@ def main():
         tokenizer=tokenizer,
         data_collator=data_collator,
         compute_metrics=compute_metrics if training_args.predict_with_generate else None,
-        save_changed=model_args.pre_seq_len is not None
+        save_prefixencoder=model_args.pre_seq_len is not None
     )
 
     # Training
