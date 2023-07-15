@@ -223,6 +223,10 @@ def main():
         print("inputs", tokenizer.decode(example["input_ids"]))
         print("label_ids", example["labels"])
         print("labels", tokenizer.decode(example["labels"]))
+    
+    base_cache_dir = os.path(data_args.base_cache_dir, data_args.task_name)
+    if training_args.local_rank <= 0 and not os.path.exists(base_cache_dir):
+        os.makedirs(base_cache_dir)
 
     if training_args.do_train:
         if "train" not in raw_datasets:
@@ -239,6 +243,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on train dataset",
+                cache_file_name=os.path.join(base_cache_dir, "train.arrow")
             )
         print_dataset_example(train_dataset[0])
 
@@ -258,6 +263,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on validation dataset",
+                cache_file_name=os.path.join(base_cache_dir, "eval.arrow")
             )
         print_dataset_example(eval_dataset[0])
 
@@ -277,6 +283,7 @@ def main():
                 remove_columns=column_names,
                 load_from_cache_file=not data_args.overwrite_cache,
                 desc="Running tokenizer on prediction dataset",
+                cache_file_name=os.path.join(base_cache_dir, "predict.arrow")
             )
         print_dataset_example(predict_dataset[0])
 

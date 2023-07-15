@@ -60,13 +60,16 @@ class ModelArguments:
         default=False
     )
 
-
+@dataclass
 class PeftArguments:
-    peft_type: str = field(
+    peft_type: Optional[str] = field(
         default=None, metadata={"help": "The kind of parameter-efficient learning."}
     )
-    prompt_tuning_initial_text: str = field(
+    prompt_tuning_initial_text: Optional[str] = field(
         default=None, metadata={"help": "The initial token list of the soft prompt-tuning"}
+    )
+    lora_dim: Optional[int] = field(
+        default=8, metadata={"help": "The dimension of LoRA"}
     )
 
 
@@ -111,6 +114,12 @@ class DataTrainingArguments:
         default=None,
         metadata={
             "help": "An optional input test data file to evaluate the metrics (rouge) on (a jsonlines or csv file)."
+        },
+    )
+    task_name: Optional[str] = field(
+        default="default_task",
+        metadata={
+            "help": "The task name."
         },
     )
     overwrite_cache: bool = field(
@@ -210,8 +219,17 @@ class DataTrainingArguments:
         metadata={
             "help": (
                 "The token to force as the first generated token after the decoder_start_token_id."
-                "Useful for multilingual models like mBART where the first generated token"
-                "needs to be the target language token (Usually it is the target language token)"
+                "Useful for multilingual models like mBART where the first generated token."
+                "needs to be the target language token (Usually it is the target language token)."
+            )
+        },
+    )
+    
+    base_cache_dir: Optional[str] = field(
+        default=None,
+        metadata={
+            "help": (
+                "The path of cache."
             )
         },
     )
