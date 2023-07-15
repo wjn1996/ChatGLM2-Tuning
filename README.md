@@ -5,7 +5,7 @@
 
 [ChatGLM2-6B](https://github.com/THUDM/ChatGLM2-6B) 是开源中英双语对话模型 [ChatGLM-6B](https://github.com/THUDM/ChatGLM-6B) 的第二代版本，在保留了初代模型对话流畅、部署门槛较低等众多优秀特性的基础之上，进一步优化了模型，使得其具有更大的性能、更长的输入、更有效的部署和更开放的协议。ChatGLM2-6B也因此登顶C-Eval榜单。
 
-本项目基于 **ChatGLM2-6B** 进行微调，可进行全参数微调，也可以使用如下优化技术：
+本项目结合了 **ChatGLM-6B** 和 **ChatGLM2-6B** 进行微调，可进行全参数微调，也可以使用如下优化技术：
 - Peft参数有效性训练：Ptuning、Prompt-tuning、Prefix-tuning、LoRA；
 - DeepSpeed ZeRO训练；
 - 量化感知训练&推理部署；
@@ -13,12 +13,12 @@
 ---
 
 开发进程：
-- 代码调试 ⌛️ 
-- 全参数训练 ⌛️ 
-- 参数有效性训练 ⌛️ 
-- 量化感知训练 ⌛️ 
-- 指令微调 ⌛️ 
-- 多轮对话 ⌛️ 
+- 代码调试 ✅
+- 全参数训练 ✅ 
+- 参数有效性训练 ✅ 
+- 量化感知训练 ✅ 
+- 指令微调 ✅ 
+- 多轮对话 ✅ 
 
 ---
 
@@ -108,42 +108,106 @@ TODO
 
 训练采用Causal LM进行训练，前向传播时只会计算指定token的loss，对于指令、对话历史、input和padding部分可以通过设置label为“-100”忽略对应的loss计算。
 
-##### （1）全量参数训练
-TODO
+##### （1）P-tuning训练
+```bash
+TASK_NAME=default_task # 指定任务名称
+PRE_SEQ_LEN=128 # prefix token数量
+LR=1e-4 # 学习率
 
-##### （2）参数有效性训练
-TODO
+CHAT_TRAIN_DATA=data/train.json
+CHAT_VAL_DATA=data/dev.json
 
+MODEL_NAME_OR_PATH=pre-trained-lm/chatglm-6b
 
-##### （3）量化感知训练
-TODO
+NUM_GPUS=8
+
+MASTER_PORT=$(shuf -n 1 -i 10000-65535)
+
+MODEL_VERSION=v1 # V1:初始化为ChatGLM-6B，V2:初始化为ChatGLM2-6B
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+deepspeed --num_gpus=$NUM_GPUS --master_port $MASTER_PORT chatglm_model_$MODEL_VERSION/run_ptuning.py \
+--deepspeed deepspeed/deepspeed.json \
+--do_train \
+--train_file $CHAT_TRAIN_DATA \
+--test_file $CHAT_VAL_DATA \
+--prompt_column input \
+--response_column output \
+--model_name_or_path $MODEL_NAME_OR_PATH \
+--output_dir ./output/deepspeed/adgen-chatglm-6b-ft-$LR \
+--overwrite_output_dir \
+--max_source_length 256 \
+--max_target_length 256 \
+--per_device_train_batch_size 32 \
+--per_device_eval_batch_size 32 \
+--gradient_accumulation_steps 1 \
+--predict_with_generate \
+--max_steps 9000 \
+--logging_steps 10 \
+--save_steps 1000 \
+--learning_rate $LR \
+--task_name $TASK_NAME \
+--base_cache_dir ./.cache \
+--fp16
+# --overwrite_cache \
+```
+
+参考脚本：scripts/ds_train_ptuning.sh
+
+##### （2）LoRA训练
+```bash
+TASK_NAME=default_task # 指定任务名称
+# PRE_SEQ_LEN=128
+PEFT_TYPE=lora # 指定参数有效性方法
+LORA_DIM=8 # 指定LoRA Rank
+LR=1e-4 # 学习率
+
+CHAT_TRAIN_DATA=./data/train.json
+CHAT_VAL_DATA=./data/dev.json
+
+MODEL_NAME_OR_PATH=./pre-trained-lm/chatglm-6b
+
+NUM_GPUS=8
+
+MASTER_PORT=$(shuf -n 1 -i 10000-65535)
+
+export CUDA_VISIBLE_DEVICES=0,1,2,3,4,5,6,7
+deepspeed --num_gpus=$NUM_GPUS --master_port $MASTER_PORT chatglm_model_v1/run_peft.py \
+--deepspeed deepspeed/deepspeed.json \
+--do_train \
+--train_file $CHAT_TRAIN_DATA \
+--test_file $CHAT_VAL_DATA \
+--prompt_column input \
+--response_column output \
+--model_name_or_path $MODEL_NAME_OR_PATH \
+--output_dir ./output/deepspeed/chatglm-6b-$TASK_NAME-$PEFT_TYPE-$LORA_DIM-$LR \
+--overwrite_output_dir \
+--max_source_length 256 \
+--max_target_length 1024 \
+--per_device_train_batch_size 32 \
+--per_device_eval_batch_size 32 \
+--gradient_accumulation_steps 1 \
+--predict_with_generate \
+--max_steps 9000 \
+--logging_steps 10 \
+--save_steps 1000 \
+--learning_rate $LR \
+--peft_type $PEFT_TYPE \
+--lora_dim $LORA_DIM \
+--task_name $TASK_NAME \
+--base_cache_dir ./.cache/ \
+--fp16
+# --overwrite_cache \
+```
+
+参考脚本：scripts/ds_train_peft.sh
+
+如果要使用INT4量化感知训练，添加参数
+
+> --quantization_bit 4
+
+即可。
 
 ### 2.4 模型推理与部署
 
-##### （1）直接使用代码调用
-
-可以通过如下代码调用 ChatGLM2-6B 模型来生成对话：
-
-```python
->>> from transformers import AutoTokenizer, AutoModel
->>> tokenizer = AutoTokenizer.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True)
->>> model = AutoModel.from_pretrained("THUDM/chatglm2-6b", trust_remote_code=True, device='cuda')
->>> model = model.eval()
->>> response, history = model.chat(tokenizer, "你好", history=[])
->>> print(response)
-你好👋!我是人工智能助手 ChatGLM2-6B,很高兴见到你,欢迎问我任何问题。
->>> response, history = model.chat(tokenizer, "晚上睡不着应该怎么办", history=history)
->>> print(response)
-晚上睡不着可能会让你感到焦虑或不舒服,但以下是一些可以帮助你入睡的方法:
-
-1. 制定规律的睡眠时间表:保持规律的睡眠时间表可以帮助你建立健康的睡眠习惯,使你更容易入睡。尽量在每天的相同时间上床,并在同一时间起床。
-2. 创造一个舒适的睡眠环境:确保睡眠环境舒适,安静,黑暗且温度适宜。可以使用舒适的床上用品,并保持房间通风。
-3. 放松身心:在睡前做些放松的活动,例如泡个热水澡,听些轻柔的音乐,阅读一些有趣的书籍等,有助于缓解紧张和焦虑,使你更容易入睡。
-4. 避免饮用含有咖啡因的饮料:咖啡因是一种刺激性物质,会影响你的睡眠质量。尽量避免在睡前饮用含有咖啡因的饮料,例如咖啡,茶和可乐。
-5. 避免在床上做与睡眠无关的事情:在床上做些与睡眠无关的事情,例如看电影,玩游戏或工作等,可能会干扰你的睡眠。
-6. 尝试呼吸技巧:深呼吸是一种放松技巧,可以帮助你缓解紧张和焦虑,使你更容易入睡。试着慢慢吸气,保持几秒钟,然后缓慢呼气。
-
-如果这些方法无法帮助你入睡,你可以考虑咨询医生或睡眠专家,寻求进一步的建议。
-```
-
-TODO
+可直接参考ChatGLM-6B或ChatGLM2-6B的部署即可。
